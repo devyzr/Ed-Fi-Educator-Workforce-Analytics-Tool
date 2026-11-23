@@ -95,8 +95,15 @@ EnrichedStaff AS (
             ELSE NULL
         END AS nonRetentionYear,
 
-        scd.CodeValue AS StaffAssignmentType,
-        ISNULL(asd.CodeValue, 'None') AS AssignmentSubjectCategory,
+        -- 09 Feb 2026, replaced scd.CodeValue for scd.ShortDescription
+        -- Daniel Verdin
+        -- scd.CodeValue AS StaffAssignmentType,
+        scd.ShortDescription AS StaffAssignmentType,
+        -- 17 Sep 2026, replaced the StaffSchoolAssociationAcademicSubject descriptor
+        -- for the CourseTitle reached via StaffSectionAssociation -> Section -> CourseOffering -> Course
+        -- Daniel Verdin
+        -- ISNULL(asd.CodeValue, 'None') AS AssignmentSubjectCategory,
+        ISNULL(crs.CourseTitle, 'None') AS AssignmentSubjectCategory,
         ISNULL(cred.ShortDescription, 'None') AS CredentialType,
         
         edorg.[NameOfInstitution] AS Campus,
@@ -116,6 +123,9 @@ EnrichedStaff AS (
 
         -- Race Logic
         CASE 
+            -- 9 Feb 2026 - Daniel Verdin
+            -- Added Hispanic conditional
+            WHEN s.HispanicLatinoEthnicity = 1 THEN 'Hispanic'
             WHEN sr.RaceDescriptorId = 9999 THEN 'Multiple'
             WHEN r.CodeValue IS NULL THEN 'None'
             ELSE r.CodeValue
@@ -144,7 +154,10 @@ EnrichedStaff AS (
         -- Calculate the Next Year's School and District here to avoid subqueries later
         LEAD(edorg.EducationOrganizationId) OVER (PARTITION BY ea.TeacherID ORDER BY ea.SchoolYearStart) AS NextYearSchoolId,
         LEAD(ISNULL(lea.EducationOrganizationId, edorg.EducationOrganizationId)) OVER (PARTITION BY ea.TeacherID ORDER BY ea.SchoolYearStart) AS NextYearLEAId,
-        LEAD(ea.SchoolYearStart) OVER (PARTITION BY ea.TeacherID ORDER BY ea.SchoolYearStart) AS NextYearValue
+        LEAD(ea.SchoolYearStart) OVER (PARTITION BY ea.TeacherID ORDER BY ea.SchoolYearStart) AS NextYearValue,
+
+        -- Inactive Staff filter
+        sepReason.CodeValue AS SeparationReason
 
     FROM ExplodedAssignments ea
         INNER JOIN [edfi].[StaffEducationOrganizationAssignmentAssociation] AS seoaa 
@@ -162,10 +175,27 @@ EnrichedStaff AS (
         LEFT JOIN [edfi].[Descriptor] AS scdesc ON scdesc.DescriptorId = schoolCat.SchoolCategoryDescriptorId
         LEFT JOIN [edfi].[Descriptor] AS r ON r.DescriptorId = sr.RaceDescriptorId
         LEFT JOIN [edfi].[Descriptor] AS scd ON scd.DescriptorId = ea.StaffClassificationDescriptorId
-        LEFT JOIN [edfi].[StaffSchoolAssociationAcademicSubject] AS ssaas 
-            ON ssaas.SchoolId = ea.EducationOrganizationId AND ssaas.StaffUSI = ea.TeacherID
-        LEFT JOIN [edfi].[Descriptor] AS asd ON asd.DescriptorId = ssaas.AcademicSubjectDescriptorId
-        
+        -- Section -> Course chain feeding AssignmentSubjectCategory
+        -- Section.SchoolYear is the ending year of the span (2025-2026 => 2026), so join on SchoolYearEnd
+        LEFT JOIN [edfi].[StaffSectionAssociation] AS ssa
+            ON ssa.StaffUSI = ea.TeacherID
+            AND ssa.SchoolId = ea.EducationOrganizationId
+            AND ssa.SchoolYear = ea.SchoolYearEnd
+        LEFT JOIN [edfi].[Section] AS sec
+            ON sec.SchoolId = ssa.SchoolId
+            AND sec.SchoolYear = ssa.SchoolYear
+            AND sec.LocalCourseCode = ssa.LocalCourseCode
+            AND sec.SectionIdentifier = ssa.SectionIdentifier
+            AND sec.SessionName = ssa.SessionName
+        LEFT JOIN [edfi].[CourseOffering] AS co
+            ON co.SchoolId = sec.SchoolId
+            AND co.SchoolYear = sec.SchoolYear
+            AND co.LocalCourseCode = sec.LocalCourseCode
+            AND co.SessionName = sec.SessionName
+        LEFT JOIN [edfi].[Course] AS crs
+            ON crs.CourseCode = co.CourseCode
+            AND crs.EducationOrganizationId = co.EducationOrganizationId
+
         LEFT JOIN [edfi].[StaffCredential] AS sc ON sc.StaffUSI = s.StaffUSI
         LEFT JOIN [edfi].[Credential] AS c ON c.CredentialIdentifier = sc.CredentialIdentifier
         LEFT JOIN [edfi].[Descriptor] AS cred ON cred.DescriptorId = c.TeachingCredentialDescriptorId
@@ -174,6 +204,19 @@ EnrichedStaff AS (
         LEFT JOIN [edfi].[EducationOrganizationAddress] AS eoa ON eoa.EducationOrganizationId = ea.EducationOrganizationId 
         LEFT JOIN [edfi].[EducationOrganizationAddress] AS eoaLEA ON eoaLEA.EducationOrganizationId = SchoolLEA.LocalEducationAgencyId
         LEFT JOIN [edfi].[EducationOrganizationAddress] AS eoaLEA2 ON eoaLEA2.EducationOrganizationId = edorg.EducationOrganizationId
+
+        -- Separation Reason Filter for Inactive Staff
+        LEFT JOIN [edfi].[StaffEducationOrganizationEmploymentAssociation] AS seoa
+            ON seoa.StaffUSI = ea.TeacherID
+        LEFT JOIN [edfi].[Descriptor] AS sepReason
+            ON sepReason.DescriptorId = seoa.SeparationReasonDescriptorId
+
+    -- Employment Association HireDate/EndDate Filter
+    -- Exclude epoch HireDate (1970-01-01)
+    -- Include if EndDate is NULL, or EndDate within last 5 years
+    WHERE seoa.HireDate <> '1970-01-01'
+      AND (seoa.EndDate IS NULL
+           OR seoa.EndDate >= DATEADD(YEAR, -5, GETDATE()))
 )
 
 -- Final Projection & Retention Calculation
@@ -228,9 +271,12 @@ SELECT
              THEN 'NoLongerInCounty'
              
         ELSE 'UNKNOWN'
-    END AS RetentionStatus
+    END AS RetentionStatus,
+    es.SeparationReason
 
 FROM EnrichedStaff es
 WHERE es.SchoolYearStart > YEAR(GETDATE()) - 10
+
+GO
 
 

@@ -106,4 +106,6 @@ WHERE
     (sye.EndDate IS NULL OR DATEFROMPARTS(sye.SchoolYearStart, 7, 1) <= sye.EndDate)
     AND (DATEFROMPARTS(sye.SchoolYearStart + 1, 6, 30) >= sye.StartDate)
     AND sye.SchoolYearStart > YEAR(GETDATE())-10;
+GO
+
 

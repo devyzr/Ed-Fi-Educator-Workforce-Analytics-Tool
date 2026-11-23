@@ -1,3 +1,4 @@
+CREATE OR ALTER VIEW vw_VacancyData AS
 WITH VacancyRaw AS (
     -- Gather the raw data and handle basic ISNULL logic. 
     SELECT 
@@ -6,9 +7,10 @@ WITH VacancyRaw AS (
         ,osp.DatePostingRemoved
         ,osp.RequisitionNumber
         ,CASE 
-            WHEN osp.DatePostingRemoved IS NULL THEN osp.RequisitionNumber 
+            WHEN osp.DatePostingRemoved IS NULL THEN osp.RequisitionNumber
+            WHEN osp.DatePostingRemoved > CAST(GETDATE() AS DATE) THEN osp.RequisitionNumber
             ELSE NULL 
-         END as isPositionOpen 
+        END as isPositionOpen
         ,ISNULL(ospasd.CodeValue, 'None') AS AssignmentCategory
         ,scd.CodeValue AS AssignmentType 
         ,school.[NameOfInstitution] AS Campus
@@ -96,3 +98,6 @@ SELECT
 FROM VacancyRaw vr
 INNER JOIN MonthlyCalendar mc
     ON mc.CalendarDate BETWEEN vr.StartMonth AND vr.EndMonth
+GO
+
+
